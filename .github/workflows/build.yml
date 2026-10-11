@@ -73,6 +73,47 @@ jobs:
         git clone https://github.com/${{ github.repository }} -b ${{ github.ref_name }} ./device/sprd/uws6152_1h10_go
       working-directory: ${{ steps.pwd.outputs.workspace-folder }}
 
+    - name: Inspect CD12MAX original boot image
+      run: |
+        set -eux
+
+        sudo apt-get update
+        sudo apt-get install -y android-tools-mkbootimg unzip file
+
+        mkdir -p "$RUNNER_TEMP/cd12max"
+        cd "$RUNNER_TEMP/cd12max"
+
+        curl -fL \
+          "https://github.com/dvnex0/Auto-TWRP-Builder/raw/master/boot.img.zip" \
+          -o boot.img.zip
+
+        unzip -l boot.img.zip
+        unzip -o boot.img.zip -d extracted
+
+        BOOT_IMG="$(find extracted -type f -name boot.img -print -quit)"
+
+        if [ -z "$BOOT_IMG" ]; then
+          echo "::error::boot.img não encontrado no ZIP"
+          exit 1
+        fi
+
+        file "$BOOT_IMG"
+
+        mkdir unpacked
+        unpackbootimg -i "$BOOT_IMG" -o unpacked
+
+        echo "=== Componentes do boot original ==="
+        find unpacked -maxdepth 2 -type f -exec file {} \;
+
+        echo "=== Kernel atual da árvore CD20MAX ==="
+        file "$GITHUB_WORKSPACE/device/sprd/uws6152_1h10_go/prebuilt/kernel"
+
+        echo "=== DTBO atual da árvore CD20MAX ==="
+        file "$GITHUB_WORKSPACE/device/sprd/uws6152_1h10_go/prebuilt/dtbo.img"
+
+        echo "=== Arquivos extraídos ==="
+        ls -lh unpacked
+
     - name: Set Swap Space
       uses: pierotofy/set-swap-space@master
       with:
