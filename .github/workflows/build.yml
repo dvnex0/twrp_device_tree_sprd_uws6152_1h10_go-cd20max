@@ -1,5 +1,5 @@
 
-name: Recovery Build - CD12MAX DTBO Isolation Test
+name: Recovery Build - CD12MAX Kernel Isolation Test
 
 on:
   workflow_dispatch:
@@ -212,7 +212,7 @@ jobs:
 
         working-directory: ${{ steps.init.outputs.workspace_dir }}
 
-      - name: Test CD12MAX DTBO with known-booting CD20MAX kernel
+      - name: Select CD12MAX kernel with original CD20MAX DTBO
         shell: bash
         run: |
           set -euo pipefail
@@ -224,9 +224,9 @@ jobs:
           test -s "$KERNEL"
           test -s "$DEVICE/prebuilt/kernel"
           test -s "$DEVICE/prebuilt/dtbo.img"
-          test -s "$DEVICE/dtbo.img"
+          test -s "$KERNEL"
 
-          echo "Backing up the original CD20MAX components..."
+          echo "Saving original CD20MAX components for comparison..."
 
           cp "$DEVICE/prebuilt/kernel" \
             "$REPORT/kernel-cd20max-original"
@@ -239,32 +239,10 @@ jobs:
             "$REPORT/dtbo-cd20max-original.img" \
             > "$REPORT/cd20max-component-hashes.txt"
 
-          echo "Validating CD12MAX DTBO image..."
-
-          python3 - "$DEVICE/dtbo.img" <<'PY'
-          import os
-          import sys
-
-          path = sys.argv[1]
-          with open(path, "rb") as f:
-              magic = f.read(4)
-
-          if magic != bytes.fromhex("d7b7ab1e"):
-              print("ERROR: dtbo.img has an unexpected DT table magic.")
-              sys.exit(1)
-
-          if os.path.getsize(path) < 40:
-              print("ERROR: dtbo.img is too small to be a valid DT table.")
-              sys.exit(1)
-
-          print("DTBO image signature confirmed.")
-          PY
-
-          echo "Installing the CD12MAX DTBO while keeping the CD20MAX kernel..."
-
-          # Controlled test: keep the kernel from the recovery build known
-          # to boot on the CD20MAX; change only the DTBO to the CD12MAX file.
-          cp "$DEVICE/dtbo.img" "$DEVICE/prebuilt/dtbo.img"
+          # Controlled test: change only the kernel. Keep the original,
+          # small CD20MAX recovery DTBO rather than using the 8 MiB raw
+          # CD12MAX DTBO dump as recovery_dtbo.
+          cp "$KERNEL" "$DEVICE/prebuilt/kernel"
           chmod 0644 "$DEVICE/prebuilt/kernel" "$DEVICE/prebuilt/dtbo.img"
 
           sha256sum "$DEVICE/prebuilt/kernel" \
@@ -278,19 +256,19 @@ jobs:
             "$DEVICE/BoardConfig.mk"
 
           cat > "$REPORT/BUILD-NOTES.txt" <<'EOF'
-          Target: CD12MAX recovery boot-isolation test.
+          Target: CD12MAX kernel-isolation recovery candidate.
 
-          Kernel: original CD20MAX prebuilt kernel from this device tree, kept
-          unchanged because a recovery using this kernel previously booted.
-          DTBO: dtbo.img from the root of this repository, selected for CD12MAX.
-          Device tree: CD20MAX TWRP configuration, with only the DTBO changed.
+          Kernel: extracted from the original CD12MAX boot.img.
+          DTBO: original CD20MAX prebuilt recovery DTBO (6361-byte file).
+          Device tree: based on the existing CD20MAX TWRP tree.
 
-          This test isolates the DTBO from the CD12MAX kernel. Compilation
-          alone does not prove the recovery will boot or that touch will work.
-          Physical-device testing is required.
+          Only the kernel is changed in this candidate. Before any device test,
+          the image is checked for non-empty kernel, compressed ramdisk, and
+          recovery DTBO payload. Build success alone does not prove bootability
+          or touchscreen operation.
           EOF
 
-          echo "CD12MAX kernel and DTBO installed in the build tree."
+          echo "CD12MAX kernel selected; original CD20MAX DTBO preserved."
 
       - name: Configure optional Python 2 compatibility
         shell: bash
@@ -341,21 +319,92 @@ jobs:
 
           test -s "$IMAGE"
 
-          mkdir -p "$RUNNER_TEMP/CD12MAX-TWRP-dtbo-isolation-test"
+          echo "Validating Android boot image payloads before publishing..."
+          python3 - "$IMAGE" <<'PY'
+          import os
+          import struct
+          import sys
+
+          path = sys.argv[1]
+          with open(path, "rb") as f:
+              image = f.read()
+
+          def fail(message):
+              print("ERROR:", message)
+              sys.exit(1)
+
+          if len(image) < 1660 or image[:8] != b"ANDROID!":
+              fail("output is not a complete Android boot image")
+
+          kernel_size = struct.unpack_from("<I", image, 8)[0]
+          ramdisk_size = struct.unpack_from("<I", image, 16)[0]
+          page_size = struct.unpack_from("<I", image, 36)[0]
+          header_version = struct.unpack_from("<I", image, 40)[0]
+
+          if page_size <= 0 or kernel_size <= 0 or ramdisk_size <= 0:
+              fail("invalid kernel/ramdisk/page-size fields")
+
+          kernel_start = page_size
+          kernel_end = kernel_start + kernel_size
+          ramdisk_start = page_size + ((kernel_size + page_size - 1) // page_size) * page_size
+          ramdisk_end = ramdisk_start + ramdisk_size
+
+          if kernel_end > len(image) or ramdisk_end > len(image):
+              fail("kernel or ramdisk payload extends beyond the image")
+
+          kernel = image[kernel_start:kernel_end]
+          ramdisk = image[ramdisk_start:ramdisk_end]
+
+          if len(kernel) != kernel_size or not any(kernel):
+              fail("kernel payload is empty or truncated")
+
+          if len(ramdisk) != ramdisk_size or not any(ramdisk):
+              fail("ramdisk payload is empty or truncated; refusing to publish")
+
+          if ramdisk[:2] != b"\x1f\x8b":
+              fail("compressed recovery ramdisk does not have the expected gzip signature")
+
+          dtbo_size = 0
+          if header_version >= 1:
+              dtbo_size = struct.unpack_from("<I", image, 1632)[0]
+              dtbo_offset = struct.unpack_from("<Q", image, 1636)[0]
+
+              if dtbo_size:
+                  dtbo_end = dtbo_offset + dtbo_size
+                  if dtbo_offset < ramdisk_end or dtbo_end > len(image):
+                      fail("recovery DTBO range is outside the image or overlaps the ramdisk")
+
+                  dtbo = image[dtbo_offset:dtbo_end]
+                  if len(dtbo) != dtbo_size or dtbo[:4] != bytes.fromhex("d7b7ab1e"):
+                      fail("recovery DTBO payload is missing, empty, or has an invalid magic")
+
+                  declared_dtbo_size = struct.unpack_from(">I", dtbo, 4)[0]
+                  if declared_dtbo_size < 32 or declared_dtbo_size > dtbo_size:
+                      fail("recovery DTBO table declares an invalid size")
+
+          print("Android boot header:", "version", header_version, "page", page_size)
+          print("Kernel bytes:", kernel_size)
+          print("Ramdisk bytes:", ramdisk_size, "gzip signature: OK")
+          print("Recovery DTBO bytes:", dtbo_size)
+          print("Image bytes:", os.path.getsize(path))
+          print("Payload integrity checks passed.")
+          PY
+
+          mkdir -p "$RUNNER_TEMP/CD12MAX-TWRP-kernel-isolation-test"
 
           cp "$IMAGE" \
-            "$RUNNER_TEMP/CD12MAX-TWRP-dtbo-isolation-test/recovery-CD12MAX-dtbo-isolation-test.img"
+            "$RUNNER_TEMP/CD12MAX-TWRP-kernel-isolation-test/recovery-CD12MAX-kernel-isolation-test.img"
 
           sha256sum \
-            "$RUNNER_TEMP/CD12MAX-TWRP-dtbo-isolation-test/recovery-CD12MAX-dtbo-isolation-test.img"
+            "$RUNNER_TEMP/CD12MAX-TWRP-kernel-isolation-test/recovery-CD12MAX-kernel-isolation-test.img"
         working-directory: ${{ steps.init.outputs.workspace_dir }}
 
       - name: Upload recovery candidate
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: CD12MAX-TWRP-dtbo-isolation-test
-          path: ${{ runner.temp }}/CD12MAX-TWRP-dtbo-isolation-test/
+          name: CD12MAX-TWRP-kernel-isolation-test
+          path: ${{ runner.temp }}/CD12MAX-TWRP-kernel-isolation-test/
           if-no-files-found: error
           retention-days: 7
 
