@@ -364,23 +364,26 @@ jobs:
           if ramdisk[:2] != b"\x1f\x8b":
               fail("compressed recovery ramdisk does not have the expected gzip signature")
 
-          dtbo_size = 0
-          if header_version >= 1:
-              dtbo_size = struct.unpack_from("<I", image, 1632)[0]
-              dtbo_offset = struct.unpack_from("<Q", image, 1636)[0]
+          if header_version < 1:
+              fail("this target requires boot image header version 1 or newer")
 
-              if dtbo_size:
-                  dtbo_end = dtbo_offset + dtbo_size
-                  if dtbo_offset < ramdisk_end or dtbo_end > len(image):
-                      fail("recovery DTBO range is outside the image or overlaps the ramdisk")
+          dtbo_size = struct.unpack_from("<I", image, 1632)[0]
+          dtbo_offset = struct.unpack_from("<Q", image, 1636)[0]
 
-                  dtbo = image[dtbo_offset:dtbo_end]
-                  if len(dtbo) != dtbo_size or dtbo[:4] != bytes.fromhex("d7b7ab1e"):
-                      fail("recovery DTBO payload is missing, empty, or has an invalid magic")
+          if dtbo_size <= 0:
+              fail("recovery DTBO section is missing")
 
-                  declared_dtbo_size = struct.unpack_from(">I", dtbo, 4)[0]
-                  if declared_dtbo_size < 32 or declared_dtbo_size > dtbo_size:
-                      fail("recovery DTBO table declares an invalid size")
+          dtbo_end = dtbo_offset + dtbo_size
+          if dtbo_offset < ramdisk_end or dtbo_end > len(image):
+              fail("recovery DTBO range is outside the image or overlaps the ramdisk")
+
+          dtbo = image[dtbo_offset:dtbo_end]
+          if len(dtbo) != dtbo_size or dtbo[:4] != bytes.fromhex("d7b7ab1e"):
+              fail("recovery DTBO payload is missing, empty, or has an invalid magic")
+
+          declared_dtbo_size = struct.unpack_from(">I", dtbo, 4)[0]
+          if declared_dtbo_size < 32 or declared_dtbo_size > dtbo_size:
+              fail("recovery DTBO table declares an invalid size")
 
           print("Android boot header:", "version", header_version, "page", page_size)
           print("Kernel bytes:", kernel_size)
