@@ -88,7 +88,7 @@ TW_PREPARE_DATA_MEDIA_EARLY := true
 BOARD_VNDK_VERSION := current
 
 # Debug
-TWRP_INCLUDE_LOGCAT := true
+TWRP_INCLUDE_LOGCAT := false
 TARGET_USES_LOGD := true
 
 # Sreen
@@ -116,7 +116,7 @@ TW_MTP_DEVICE := /dev/mtp_usb
 
 # TWRP Configuration
 TW_THEME := watch_mdpi
-TW_EXTRA_LANGUAGES := true
+TW_EXTRA_LANGUAGES := false
 TW_SCREEN_BLANK_ON_BOOT := true
 TW_INPUT_BLACKLIST := "hbtp_vm"
 TW_USE_TOOLBOX := true
