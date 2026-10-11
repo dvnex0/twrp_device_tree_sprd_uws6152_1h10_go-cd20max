@@ -187,7 +187,7 @@ jobs:
         shell: bash
         run: |
           set -e
-          repo sync -j4 --force-sync
+          repo sync -j8
         working-directory: ${{ steps.init.outputs.workspace_dir }}
 
       - name: Clone device tree
@@ -307,10 +307,22 @@ jobs:
         with:
           swap-size-gb: 12
 
+      - name: Cache compiler outputs
+        uses: actions/cache@v4
+        with:
+          path: ~/.ccache
+          key: twrp-9-ccache-${{ runner.os }}-${{ github.ref_name }}-${{ github.sha }}
+          restore-keys: |
+            twrp-9-ccache-${{ runner.os }}-${{ github.ref_name }}-
+
       - name: Build recovery candidate
         shell: bash
         run: |
           set -eo pipefail
+
+          export USE_CCACHE=1
+          export CCACHE_DIR="$HOME/.ccache"
+          ccache -M 5G || true
 
           echo "Inicializando o ambiente TWRP..."
           source build/envsetup.sh
@@ -319,9 +331,6 @@ jobs:
 
           echo "Configurando o dispositivo..."
           lunch omni_uws6152_1h10_go-eng
-
-          echo "Limpando compilação anterior..."
-          make clean
 
           echo "Compilando recovery..."
           make recoveryimage -j2
