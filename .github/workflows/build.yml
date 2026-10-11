@@ -68,6 +68,25 @@ jobs:
         repo sync -j$(nproc --all) --force-sync
       working-directory: workspace
       
+    - name: Download and inspect original CD12MAX boot
+      run: |
+        set -e
+        mkdir -p "$RUNNER_TEMP/cd12max_boot"
+        cd "$RUNNER_TEMP/cd12max_boot"
+
+        curl -fL \
+          "https://github.com/dvnex0/Auto-TWRP-Builder/raw/master/boot.img.zip" \
+          -o boot.img.zip
+
+        unzip -l boot.img.zip
+
+        unzip -o boot.img.zip -d extracted
+
+        echo "Arquivos extraídos:"
+        find extracted -maxdepth 3 -type f -printf '%p (%s bytes)\n'
+
+        find extracted -type f -name 'boot.img' -print
+
     - name: Clone device tree
       run: |
         git clone https://github.com/${{ github.repository }} -b ${{ github.ref_name }} ./device/sprd/uws6152_1h10_go
