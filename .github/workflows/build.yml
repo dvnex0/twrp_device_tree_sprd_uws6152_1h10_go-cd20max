@@ -1,5 +1,5 @@
 
-name: Recovery Build - CD12MAX Touch Candidate
+name: Recovery Build - CD12MAX DTBO Isolation Test
 
 on:
   workflow_dispatch:
@@ -212,7 +212,7 @@ jobs:
 
         working-directory: ${{ steps.init.outputs.workspace_dir }}
 
-      - name: Apply CD12MAX kernel
+      - name: Test CD12MAX DTBO with known-booting CD20MAX kernel
         shell: bash
         run: |
           set -euo pipefail
@@ -260,9 +260,10 @@ jobs:
           print("DTBO image signature confirmed.")
           PY
 
-          echo "Installing the CD12MAX kernel and DTBO..."
+          echo "Installing the CD12MAX DTBO while keeping the CD20MAX kernel..."
 
-          cp "$KERNEL" "$DEVICE/prebuilt/kernel"
+          # Controlled test: keep the kernel from the recovery build known
+          # to boot on the CD20MAX; change only the DTBO to the CD12MAX file.
           cp "$DEVICE/dtbo.img" "$DEVICE/prebuilt/dtbo.img"
           chmod 0644 "$DEVICE/prebuilt/kernel" "$DEVICE/prebuilt/dtbo.img"
 
@@ -277,15 +278,16 @@ jobs:
             "$DEVICE/BoardConfig.mk"
 
           cat > "$REPORT/BUILD-NOTES.txt" <<'EOF'
-          Target: CD12MAX touchscreen recovery candidate.
+          Target: CD12MAX recovery boot-isolation test.
 
-          Kernel: extracted from the supplied original CD12MAX boot.img.
-          DTBO: taken from dtbo.img at the root of the device-tree repository.
-          Device tree: based on the CD20MAX device tree, with CD12MAX kernel
-          and DTBO selected for this candidate.
+          Kernel: original CD20MAX prebuilt kernel from this device tree, kept
+          unchanged because a recovery using this kernel previously booted.
+          DTBO: dtbo.img from the root of this repository, selected for CD12MAX.
+          Device tree: CD20MAX TWRP configuration, with only the DTBO changed.
 
-          A successful compilation does not prove touchscreen operation.
-          Physical-device testing is still required.
+          This test isolates the DTBO from the CD12MAX kernel. Compilation
+          alone does not prove the recovery will boot or that touch will work.
+          Physical-device testing is required.
           EOF
 
           echo "CD12MAX kernel and DTBO installed in the build tree."
@@ -339,21 +341,21 @@ jobs:
 
           test -s "$IMAGE"
 
-          mkdir -p "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate"
+          mkdir -p "$RUNNER_TEMP/CD12MAX-TWRP-dtbo-isolation-test"
 
           cp "$IMAGE" \
-            "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img"
+            "$RUNNER_TEMP/CD12MAX-TWRP-dtbo-isolation-test/recovery-CD12MAX-dtbo-isolation-test.img"
 
           sha256sum \
-            "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img"
+            "$RUNNER_TEMP/CD12MAX-TWRP-dtbo-isolation-test/recovery-CD12MAX-dtbo-isolation-test.img"
         working-directory: ${{ steps.init.outputs.workspace_dir }}
 
       - name: Upload recovery candidate
         if: success()
         uses: actions/upload-artifact@v4
         with:
-          name: CD12MAX-TWRP-touch-candidate
-          path: ${{ runner.temp }}/CD12MAX-TWRP-touch-candidate/
+          name: CD12MAX-TWRP-dtbo-isolation-test
+          path: ${{ runner.temp }}/CD12MAX-TWRP-dtbo-isolation-test/
           if-no-files-found: error
           retention-days: 7
 
