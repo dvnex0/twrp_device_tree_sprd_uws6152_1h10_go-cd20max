@@ -1,25 +1,31 @@
 
 name: Recovery Build - CD12MAX Touch Candidate
 
+on:
+  workflow_dispatch:
+
 permissions:
   contents: read
 
-on:
-  workflow_dispatch:
+env:
+  DEVICE_TREE_REPOSITORY: ${{ github.repository }}
+  DEVICE_TREE_BRANCH: ${{ github.ref_name }}
 
 jobs:
   build:
     runs-on: ubuntu-22.04
 
     steps:
-      - name: Check Out
-        uses: actions/checkout@v3
+      - name: Checkout
+        uses: actions/checkout@v4
 
-      - name: Cleanup
+      - name: Free build space
         uses: rokibhasansagar/slimhub_actions@main
 
-      - name: Prepare the environment
+      - name: Install dependencies
+        shell: bash
         run: |
+          set -e
           sudo apt-get update
           sudo apt-get install -y \
             gperf gcc-multilib gcc-10-multilib \
@@ -31,107 +37,91 @@ jobs:
             libwxgtk3.0-gtk3-dev libxml2 lzop pngcrush \
             schedtool squashfs-tools imagemagick libbz2-dev \
             lzma ncftp qemu-user-static libstdc++-10-dev \
-            libncurses5 python3 unzip gzip file
+            libncurses5 python3 unzip gzip file binutils
 
-      - name: Install OpenJDK
-        uses: actions/setup-java@v3
+      - name: Install Java 8
+        uses: actions/setup-java@v4
         with:
           distribution: zulu
           java-version: '8'
 
-      - name: Install repo
-        run: |
-          mkdir -p "$HOME/bin"
-          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
-            -o "$HOME/bin/repo"
-          chmod +x "$HOME/bin/repo"
-          sudo ln -sf "$HOME/bin/repo" /usr/local/bin/repo
-
-    
-      - name: Initialize repo
-        id: init
+      - name: Install repo tool
+        shell: bash
         run: |
           set -e
-          mkdir -p workspace
-          echo "workspace-folder=$GITHUB_WORKSPACE/workspace" >> "$GITHUB_OUTPUT"
+          mkdir -p "$HOME/bin"
 
-          cd workspace
-
-          git config --global user.name "DVNex"
-          git config --global user.email "dvnex@example.invalid"
-
-          repo init --depth=1 \
-            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni \
-            -b twrp-9.0
-
-        working-directory: ${{ github.workspace }}/workspace
-
-      - name: Repo Sync
-        run: |
-          repo sync -j2 --force-sync
-        working-directory: ${{ steps.init.outputs.workspace-folder }}
-
-      - name: Download and extract original CD12MAX boot
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          mkdir -p "$RUNNER_TEMP/cd12max_boot"
-          cd "$RUNNER_TEMP/cd12max_boot"
-
-          curl -fL \
-            "https://github.com/dvnex0/Auto-TWRP-Builder/raw/master/boot.img.zip" \
-            -o boot.img.zip
-
-          unzip -o boot.img.zip -d extracted
-
-          test -s extracted/boot.img
-
-          echo "Boot image:"
-          ls -lh extracted/boot.img
-          sha256sum extracted/boot.img
-
-      - name: Clone device tree
-        run: |
-          git clone \
-            "https://github.com/${{ github.repository }}" \
-            -b "${{ github.ref_name }}" \
-            device/sprd/uws6152_1h10_go
-        working-directory: ${{ steps.init.outputs.workspace-folder }}
-
-      - name: Analyze boot and prepare CD12MAX kernel candidate
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          BOOT_IMG="$RUNNER_TEMP/cd12max_boot/extracted/boot.img"
-          REPORT="$RUNNER_TEMP/cd12max-touch-analysis"
-          UNPACK="$REPORT/unpacked"
-          DEVICE="$GITHUB_WORKSPACE/workspace/device/sprd/uws6152_1h10_go"
-
-          mkdir -p "$REPORT" "$UNPACK"
-
-          test -s "$BOOT_IMG"
-          test -s "$DEVICE/prebuilt/kernel"
-          test -s "$DEVICE/prebuilt/dtbo.img"
-
-          echo "Downloading the official Android boot-image unpacker..."
           curl -fsSL \
-            "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/unpack_bootimg.py?format=TEXT" \
-            | base64 -d > "$REPORT/unpack_bootimg.py"
+            https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
 
-          echo "Analyzing the original boot image..."
+          chmod +x "$HOME/bin/repo"
+          echo "$HOME/bin" >> "$GITHUB_PATH"
+
+      - name: Analyze original CD12MAX boot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BOOT_DIR="$RUNNER_TEMP/cd12max_boot"
+          REPORT="$RUNNER_TEMP/cd12max-touch-analysis"
+          UNPACK="$BOOT_DIR/unpacked"
+
+          mkdir -p "$BOOT_DIR/extracted" "$UNPACK" "$REPORT"
+
+          echo "Downloading original CD12MAX boot ZIP..."
+
+          curl -fL --retry 3 \
+            "https://github.com/dvnex0/Auto-TWRP-Builder/raw/master/boot.img.zip" \
+            -o "$BOOT_DIR/boot.img.zip"
+
+          unzip -o "$BOOT_DIR/boot.img.zip" \
+            -d "$BOOT_DIR/extracted"
+
+          BOOT_IMG="$BOOT_DIR/extracted/boot.img"
+          test -s "$BOOT_IMG"
+
+          file "$BOOT_IMG" | tee "$REPORT/boot-file.txt"
+          sha256sum "$BOOT_IMG" | tee "$REPORT/boot-sha256.txt"
+
+          python3 - "$BOOT_IMG" <<'PY'
+          import sys
+
+          with open(sys.argv[1], "rb") as f:
+              magic = f.read(8)
+
+          if magic != b"ANDROID!":
+              print("ERROR: boot.img is not a standard Android boot image.")
+              print("The workflow will stop instead of guessing its format.")
+              sys.exit(1)
+
+          print("Android boot image signature confirmed.")
+          PY
+
+          echo "Downloading Android's official boot unpacker..."
+
+          curl -fsSL \
+            "https://android.googlesource.com/platform/system/tools/mkbootimg/+/66a289ac2a92acb6ffd140214bd7141990a78b68/unpack_bootimg.py?format=TEXT" \
+            -o "$REPORT/unpack_bootimg.py.b64"
+
+          base64 -d "$REPORT/unpack_bootimg.py.b64" \
+            > "$REPORT/unpack_bootimg.py"
+
           python3 "$REPORT/unpack_bootimg.py" \
             --boot_img "$BOOT_IMG" \
             --out "$UNPACK" \
             --format info \
             | tee "$REPORT/boot-info.txt"
 
-          grep -Fq "boot magic: ANDROID!" "$REPORT/boot-info.txt"
-          test -s "$UNPACK/kernel"
+          KERNEL="$UNPACK/kernel"
+          test -s "$KERNEL"
 
-          echo "Checking whether the extracted kernel is ARM64..."
-          python3 - "$UNPACK/kernel" <<'PY'
+          file "$KERNEL" | tee "$REPORT/kernel-file.txt"
+          sha256sum "$KERNEL" | tee "$REPORT/kernel-sha256.txt"
+
+          echo "Validating kernel architecture..."
+
+          python3 - "$KERNEL" <<'PY'
           import gzip
           import sys
 
@@ -144,49 +134,157 @@ jobs:
               with gzip.open(path, "rb") as f:
                   header = f.read(64)
 
-          if len(header) < 60 or header[56:60] != b"ARMd":
-              print("ERRO: assinatura ARM64 Image não reconhecida.")
-              print("O kernel não será substituído automaticamente.")
+          if len(header) < 60 or header[56:60] != b"ARM\x64":
+              print("ERROR: expected an ARM64 Linux Image kernel.")
+              print("Refusing to replace the existing recovery kernel.")
               sys.exit(1)
 
-          print("Assinatura ARM64 Image reconhecida.")
+          print("ARM64 Linux Image kernel signature confirmed.")
           PY
 
-          echo "Saving the original CD20MAX kernel..."
-          cp "$DEVICE/prebuilt/kernel" "$REPORT/kernel-cd20max-original"
+          echo "Searching for possible touchscreen driver strings..."
 
-          echo "Saving the extracted CD12MAX kernel..."
-          cp "$UNPACK/kernel" "$REPORT/kernel-cd12max-original"
+          if gzip -t "$KERNEL" 2>/dev/null; then
+            gzip -dc "$KERNEL" > "$REPORT/kernel-scan.bin"
+          else
+            cp "$KERNEL" "$REPORT/kernel-scan.bin"
+          fi
 
-          echo "Comparing kernel files..."
+          strings -a "$REPORT/kernel-scan.bin" \
+            | grep -iE \
+              'goodix|gt9|focaltech|ft5|ft6|ilitek|himax|hx831|novatek|gslx|synaptics|cyttsp|touchscreen|touch_panel|tpd' \
+            > "$REPORT/touch-driver-hints.txt" || true
+
+          rm -f "$REPORT/kernel-scan.bin"
+
+          echo "Extracted boot components:"
+          find "$UNPACK" -maxdepth 2 -type f \
+            -printf '%f (%s bytes)\n' \
+            | tee "$REPORT/components.txt"
+
+          echo "Boot analysis completed."
+
+      - name: Initialize TWRP manifest
+        id: init
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          mkdir -p "$GITHUB_WORKSPACE/workspace"
+          cd "$GITHUB_WORKSPACE/workspace"
+
+          echo "workspace_dir=$PWD" >> "$GITHUB_OUTPUT"
+
+          git config --global user.name "DVNex"
+          git config --global user.email \
+            "dvnex0@users.noreply.github.com"
+
+          repo init --depth=1 \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni \
+            -b twrp-9.0
+
+      - name: Sync TWRP sources
+        shell: bash
+        run: |
+          set -e
+          repo sync -j4 --force-sync
+        working-directory: ${{ steps.init.outputs.workspace_dir }}
+
+      - name: Clone device tree
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE_PATH="device/sprd/uws6152_1h10_go"
+
+          mkdir -p device/sprd
+          rm -rf "$DEVICE_PATH"
+
+          git clone --depth=1 \
+            --single-branch \
+            --branch "$DEVICE_TREE_BRANCH" \
+            "https://github.com/$DEVICE_TREE_REPOSITORY.git" \
+            "$DEVICE_PATH"
+
+          test -s "$DEVICE_PATH/BoardConfig.mk"
+          test -s "$DEVICE_PATH/prebuilt/kernel"
+          test -s "$DEVICE_PATH/prebuilt/dtbo.img"
+
+        working-directory: ${{ steps.init.outputs.workspace_dir }}
+
+      - name: Apply CD12MAX kernel
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          DEVICE="$GITHUB_WORKSPACE/workspace/device/sprd/uws6152_1h10_go"
+          REPORT="$RUNNER_TEMP/cd12max-touch-analysis"
+          KERNEL="$RUNNER_TEMP/cd12max_boot/unpacked/kernel"
+
+          test -s "$KERNEL"
+          test -s "$DEVICE/prebuilt/kernel"
+          test -s "$DEVICE/prebuilt/dtbo.img"
+
+          echo "Backing up the original CD20MAX components..."
+
+          cp "$DEVICE/prebuilt/kernel" \
+            "$REPORT/kernel-cd20max-original"
+
+          cp "$DEVICE/prebuilt/dtbo.img" \
+            "$REPORT/dtbo-cd20max-original.img"
+
           sha256sum \
             "$REPORT/kernel-cd20max-original" \
-            "$REPORT/kernel-cd12max-original"
+            "$REPORT/dtbo-cd20max-original.img" \
+            > "$REPORT/cd20max-component-hashes.txt"
 
-          echo "Using the CD12MAX kernel for this build candidate..."
-          cp "$UNPACK/kernel" "$DEVICE/prebuilt/kernel"
+          echo "Installing the validated CD12MAX kernel..."
 
-          echo "Kernel candidate prepared."
-          echo "The CD20MAX DTBO remains unchanged."
-          echo "No device has been flashed."
+          cp "$KERNEL" "$DEVICE/prebuilt/kernel"
+          chmod 0644 "$DEVICE/prebuilt/kernel"
 
-      - name: Set Swap Space
+          sed -i \
+            's/^TW_DEVICE_VERSION[[:space:]]*:=[[:space:]].*/TW_DEVICE_VERSION := CD12MAX_TOUCH_CANDIDATE/' \
+            "$DEVICE/BoardConfig.mk"
+
+          sha256sum "$DEVICE/prebuilt/kernel" \
+            | tee "$REPORT/kernel-selected-for-build.txt"
+
+          cat > "$REPORT/BUILD-NOTES.txt" <<'EOF'
+          Target: CD12MAX touchscreen recovery candidate.
+
+          Kernel: extracted from the supplied original CD12MAX boot.img.
+          Device tree: based on the CD20MAX device tree.
+          DTBO: original CD20MAX DTBO retained because a CD12MAX DTBO
+          was not supplied separately.
+
+          A successful compilation does not prove touchscreen operation.
+          Physical-device testing is still required.
+          EOF
+
+          echo "Candidate kernel installed in the build tree."
+
+      - name: Configure optional Python 2 compatibility
+        shell: bash
+        continue-on-error: true
+        run: |
+          sudo apt-get install -y python2 || true
+
+          if command -v python2 >/dev/null 2>&1; then
+            sudo ln -sf "$(command -v python2)" \
+              /usr/local/bin/python
+            echo "/usr/local/bin" >> "$GITHUB_PATH"
+          fi
+
+      - name: Set swap space
         uses: pierotofy/set-swap-space@master
         with:
           swap-size-gb: 12
 
-      - name: Switch to Python2
-        run: |
-          sudo apt-get install -y python2 || true
-
-          if [ -x /usr/bin/python2 ]; then
-            sudo ln -sf /usr/bin/python2 /usr/local/bin/python
-          fi
-
-      - name: Building recovery candidate
+      - name: Build recovery candidate
         shell: bash
         run: |
-          set -e
+          set -euo pipefail
 
           source build/envsetup.sh
           export ALLOW_MISSING_DEPENDENCIES=true
@@ -195,15 +293,46 @@ jobs:
 
           make clean
           make recoveryimage -j2
-        working-directory: ${{ steps.init.outputs.workspace-folder }}
 
-      - name: Upload diagnostics and recovery candidate
-        if: always()
+          IMAGE="out/target/product/uws6152_1h10_go/recovery.img"
+
+          test -s "$IMAGE"
+
+          SIZE="$(stat -c '%s' "$IMAGE")"
+          echo "Recovery size: $SIZE bytes"
+
+          if [ "$SIZE" -gt 41943040 ]; then
+            echo "::error::Recovery image exceeds the configured 40 MiB partition."
+            exit 1
+          fi
+
+          mkdir -p "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate"
+
+          cp "$IMAGE" \
+            "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img"
+
+          sha256sum \
+            "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img" \
+            | tee "$RUNNER_TEMP/cd12max-touch-analysis/recovery-sha256.txt"
+
+        working-directory: ${{ steps.init.outputs.workspace_dir }}
+
+      - name: Upload recovery candidate
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: CD12MAX-TWRP-touch-candidate
+          path: ${{ runner.temp }}/CD12MAX-TWRP-touch-candidate/
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CD12MAX-TWRP-touch-diagnostics
           path: |
-            workspace/out/target/product/uws6152_1h10_go/recovery.img
             ${{ runner.temp }}/cd12max-touch-analysis/
+            ${{ runner.temp }}/cd12max_boot/unpacked/
           if-no-files-found: warn
           retention-days: 7
