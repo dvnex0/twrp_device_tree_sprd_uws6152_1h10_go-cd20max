@@ -224,6 +224,7 @@ jobs:
           test -s "$KERNEL"
           test -s "$DEVICE/prebuilt/kernel"
           test -s "$DEVICE/prebuilt/dtbo.img"
+          test -s "$DEVICE/dtbo.img"
 
           echo "Backing up the original CD20MAX components..."
 
@@ -238,31 +239,56 @@ jobs:
             "$REPORT/dtbo-cd20max-original.img" \
             > "$REPORT/cd20max-component-hashes.txt"
 
-          echo "Installing the validated CD12MAX kernel..."
+          echo "Validating CD12MAX DTBO image..."
+
+          python3 - "$DEVICE/dtbo.img" <<'PY'
+          import os
+          import sys
+
+          path = sys.argv[1]
+          with open(path, "rb") as f:
+              magic = f.read(4)
+
+          if magic != bytes.fromhex("d7b7ab1e"):
+              print("ERROR: dtbo.img has an unexpected DT table magic.")
+              sys.exit(1)
+
+          if os.path.getsize(path) < 40:
+              print("ERROR: dtbo.img is too small to be a valid DT table.")
+              sys.exit(1)
+
+          print("DTBO image signature confirmed.")
+          PY
+
+          echo "Installing the CD12MAX kernel and DTBO..."
 
           cp "$KERNEL" "$DEVICE/prebuilt/kernel"
-          chmod 0644 "$DEVICE/prebuilt/kernel"
+          cp "$DEVICE/dtbo.img" "$DEVICE/prebuilt/dtbo.img"
+          chmod 0644 "$DEVICE/prebuilt/kernel" "$DEVICE/prebuilt/dtbo.img"
+
+          sha256sum "$DEVICE/prebuilt/kernel" \
+            | tee "$REPORT/kernel-selected-for-build.txt"
+
+          sha256sum "$DEVICE/prebuilt/dtbo.img" \
+            | tee "$REPORT/dtbo-selected-for-build.txt"
 
           sed -i \
             's/^TW_DEVICE_VERSION[[:space:]]*:=[[:space:]].*/TW_DEVICE_VERSION := CD12MAX_TOUCH_CANDIDATE/' \
             "$DEVICE/BoardConfig.mk"
 
-          sha256sum "$DEVICE/prebuilt/kernel" \
-            | tee "$REPORT/kernel-selected-for-build.txt"
-
           cat > "$REPORT/BUILD-NOTES.txt" <<'EOF'
           Target: CD12MAX touchscreen recovery candidate.
 
           Kernel: extracted from the supplied original CD12MAX boot.img.
-          Device tree: based on the CD20MAX device tree.
-          DTBO: original CD20MAX DTBO retained because a CD12MAX DTBO
-          was not supplied separately.
+          DTBO: taken from dtbo.img at the root of the device-tree repository.
+          Device tree: based on the CD20MAX device tree, with CD12MAX kernel
+          and DTBO selected for this candidate.
 
           A successful compilation does not prove touchscreen operation.
           Physical-device testing is still required.
           EOF
 
-          echo "Candidate kernel installed in the build tree."
+          echo "CD12MAX kernel and DTBO installed in the build tree."
 
       - name: Configure optional Python 2 compatibility
         shell: bash
@@ -281,9 +307,6 @@ jobs:
         with:
           swap-size-gb: 12
 
-      - name: Build recovery candidate
-        shell: bash
-        run: 
       - name: Build recovery candidate
         shell: bash
         run: |
