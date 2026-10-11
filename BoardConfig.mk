@@ -80,11 +80,11 @@ TARGET_USERIMAGES_USE_F2FS := true
 TARGET_RECOVERY_PIXEL_FORMAT := RGBX_8888
 RECOVERY_SDCARD_ON_DATA := true
 
-# FBE - disabled in this size-reduction test build
-TW_INCLUDE_CRYPTO := false
-TW_INCLUDE_CRYPTO_FBE := false
-TW_USE_FSCRYPT_POLICY := false
-TW_PREPARE_DATA_MEDIA_EARLY := false
+# FBE - retain decryption support
+TW_INCLUDE_CRYPTO := true
+TW_INCLUDE_CRYPTO_FBE := true
+TW_USE_FSCRYPT_POLICY := true
+TW_PREPARE_DATA_MEDIA_EARLY := true
 BOARD_VNDK_VERSION := current
 
 # Debug
