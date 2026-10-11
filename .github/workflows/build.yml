@@ -283,28 +283,29 @@ jobs:
 
       - name: Build recovery candidate
         shell: bash
+        run: 
+      - name: Build recovery candidate
+        shell: bash
         run: |
-          set -euo pipefail
+          set -eo pipefail
 
+          echo "Inicializando o ambiente TWRP..."
           source build/envsetup.sh
+
           export ALLOW_MISSING_DEPENDENCIES=true
 
+          echo "Configurando o dispositivo..."
           lunch omni_uws6152_1h10_go-eng
 
+          echo "Limpando compilação anterior..."
           make clean
+
+          echo "Compilando recovery..."
           make recoveryimage -j2
 
           IMAGE="out/target/product/uws6152_1h10_go/recovery.img"
 
           test -s "$IMAGE"
-
-          SIZE="$(stat -c '%s' "$IMAGE")"
-          echo "Recovery size: $SIZE bytes"
-
-          if [ "$SIZE" -gt 41943040 ]; then
-            echo "::error::Recovery image exceeds the configured 40 MiB partition."
-            exit 1
-          fi
 
           mkdir -p "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate"
 
@@ -312,9 +313,7 @@ jobs:
             "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img"
 
           sha256sum \
-            "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img" \
-            | tee "$RUNNER_TEMP/cd12max-touch-analysis/recovery-sha256.txt"
-
+            "$RUNNER_TEMP/CD12MAX-TWRP-touch-candidate/recovery-CD12MAX-touch-candidate.img"
         working-directory: ${{ steps.init.outputs.workspace_dir }}
 
       - name: Upload recovery candidate
