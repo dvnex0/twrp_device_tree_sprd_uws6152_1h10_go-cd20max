@@ -1,130 +1,204 @@
-name: Recovery Build
+
+name: Recovery Build - CD12MAX Touch Candidate
+
 permissions:
-  contents: write
+  contents: read
+
 on:
   workflow_dispatch:
-    inputs:
-      release_notes:
-        description: 'Description (optional)'
-        required: false
-        default: ''
 
 jobs:
   build:
     runs-on: ubuntu-22.04
-    permissions:
-      contents: write
+
     steps:
-    - name: Display Run Parameters
-      run: |
-        echo "::group::Build Configuration"
-        echo "Manifest URL: https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni"
-        echo "Manifest Branch: twrp-9.0"
-        echo "Device Tree URL: https://github.com/${{ github.repository }}"
-        echo "Device Tree Branch: ${{ github.ref_name }}"
-        echo "Device Path: device/sprd/uws6152_1h10_go"
-        echo "Device Name: uws6152_1h10_go"
-        echo "Makefile Name: omni_uws6152_1h10_go"
-        echo "Build Target: recovery"
-        echo "::endgroup::"
+      - name: Check Out
+        uses: actions/checkout@v3
 
-    - name: Check Out
-      uses: actions/checkout@v3
+      - name: Cleanup
+        uses: rokibhasansagar/slimhub_actions@main
 
-    - name: Cleanup
-      uses: rokibhasansagar/slimhub_actions@main
+      - name: Prepare the environment
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            gperf gcc-multilib gcc-10-multilib \
+            g++-multilib g++-10-multilib libc6-dev \
+            lib32ncurses5-dev x11proto-core-dev libx11-dev \
+            tree lib32z-dev libgl1-mesa-dev libxml2-utils \
+            xsltproc bc ccache lib32readline-dev lib32z1-dev \
+            liblz4-tool libncurses5-dev libsdl1.2-dev \
+            libwxgtk3.0-gtk3-dev libxml2 lzop pngcrush \
+            schedtool squashfs-tools imagemagick libbz2-dev \
+            lzma ncftp qemu-user-static libstdc++-10-dev \
+            libncurses5 python3 unzip gzip file
 
-    - name: Prepare the environment
-      run: |
-        sudo apt update
-        sudo apt -y upgrade
-        sudo apt -y install gperf gcc-multilib gcc-10-multilib g++-multilib g++-10-multilib libc6-dev lib32ncurses5-dev x11proto-core-dev libx11-dev tree lib32z-dev libgl1-mesa-dev libxml2-utils xsltproc bc ccache lib32readline-dev lib32z1-dev liblz4-tool libncurses5-dev libsdl1.2-dev libwxgtk3.0-gtk3-dev libxml2 lzop pngcrush schedtool squashfs-tools imagemagick libbz2-dev lzma ncftp qemu-user-static libstdc++-10-dev libncurses5 python3
+      - name: Install OpenJDK
+        uses: actions/setup-java@v3
+        with:
+          distribution: zulu
+          java-version: '8'
 
-    - name: Install OpenJDK
-      uses: actions/setup-java@v3
-      with:
-        distribution: 'zulu'
-        java-version: '8'
+      - name: Install repo
+        run: |
+          mkdir -p "$HOME/bin"
+          curl -fsSL https://storage.googleapis.com/git-repo-downloads/repo \
+            -o "$HOME/bin/repo"
+          chmod +x "$HOME/bin/repo"
+          sudo ln -sf "$HOME/bin/repo" /usr/local/bin/repo
 
-    - name: Install repo
-      run: |
-        mkdir ~/bin
-        curl https://storage.googleapis.com/git-repo-downloads/repo > ~/bin/repo
-        chmod a+x ~/bin/repo
-        sudo ln -sf ~/bin/repo /usr/bin/repo
-      
-    - name: Initialize repo
-      run: |
-        mkdir workspace
-        cd workspace
-        echo "workspace-folder=$(pwd)" >> $GITHUB_OUTPUT
-        git config --global user.name "azwhikaru"
-        git config --global user.email "azwhikaru+37921907@github.com"
-        repo init --depth=1 -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni -b twrp-9.0
-      id: pwd
-          
-    - name: Repo Sync
-      run: |
-        repo sync -j$(nproc --all) --force-sync
-      working-directory: workspace
-      
-    - name: Download and inspect original CD12MAX boot
-      run: |
-        set -e
-        mkdir -p "$RUNNER_TEMP/cd12max_boot"
-        cd "$RUNNER_TEMP/cd12max_boot"
+      - name: Initialize repo
+        id: init
+        run: |
+          mkdir -p workspace
+          echo "workspace-folder=$GITHUB_WORKSPACE/workspace" >> "$GITHUB_OUTPUT"
 
-        curl -fL \
-          "https://github.com/dvnex0/Auto-TWRP-Builder/raw/master/boot.img.zip" \
-          -o boot.img.zip
+          git config --global user.name "DVNex"
+          git config --global user.email "dvnex@example.invalid"
 
-        unzip -l boot.img.zip
+          repo init --depth=1 \
+            -u https://github.com/minimal-manifest-twrp/platform_manifest_twrp_omni \
+            -b twrp-9.0
+        working-directory: ${{ github.workspace }}/workspace
 
-        unzip -o boot.img.zip -d extracted
+      - name: Repo Sync
+        run: |
+          repo sync -j2 --force-sync
+        working-directory: ${{ steps.init.outputs.workspace-folder }}
 
-        echo "Arquivos extraídos:"
-        find extracted -maxdepth 3 -type f -printf '%p (%s bytes)\n'
+      - name: Download and extract original CD12MAX boot
+        shell: bash
+        run: |
+          set -euo pipefail
 
-        find extracted -type f -name 'boot.img' -print
+          mkdir -p "$RUNNER_TEMP/cd12max_boot"
+          cd "$RUNNER_TEMP/cd12max_boot"
 
-    - name: Clone device tree
-      run: |
-        git clone https://github.com/${{ github.repository }} -b ${{ github.ref_name }} ./device/sprd/uws6152_1h10_go
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+          curl -fL \
+            "https://github.com/dvnex0/Auto-TWRP-Builder/raw/master/boot.img.zip" \
+            -o boot.img.zip
 
-    - name: Set Swap Space
-      uses: pierotofy/set-swap-space@master
-      with:
-        swap-size-gb: 12
+          unzip -o boot.img.zip -d extracted
 
-    - name: Switch to Python2
-      run: |
-        sudo apt -y install python2
-        sudo rm -rf /usr/bin/python
-        sudo ln -s /usr/bin/python2 /usr/bin/python
-      continue-on-error: true
+          test -s extracted/boot.img
 
-    - name: Building recovery
-      run: |
-        source build/envsetup.sh
-        export ALLOW_MISSING_DEPENDENCIES=true
-        lunch omni_uws6152_1h10_go-eng && make clean && make recoveryimage -j$(nproc --all)
-      working-directory: ${{ steps.pwd.outputs.workspace-folder }}
+          echo "Boot image:"
+          ls -lh extracted/boot.img
+          sha256sum extracted/boot.img
 
-    - name: Upload to Release
-      uses: softprops/action-gh-release@v2
-      with:
-        files: | 
-          workspace/out/target/product/uws6152_1h10_go/recovery.img
-          workspace/out/target/product/uws6152_1h10_go/*.zip
-          workspace/out/target/product/uws6152_1h10_go/*vendor*.img
-        name: uws6152_1h10_go-${{ github.run_id }}
-        tag_name: build-${{ github.run_id }}
-        body: |
-          ${{ github.event.inputs.release_notes }}
-          Build completed successfully!
-          Device: uws6152_1h10_go
-          Branch: ${{ github.ref_name }}
-          Triggered by: ${{ github.actor }}
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Clone device tree
+        run: |
+          git clone \
+            "https://github.com/${{ github.repository }}" \
+            -b "${{ github.ref_name }}" \
+            device/sprd/uws6152_1h10_go
+        working-directory: ${{ steps.init.outputs.workspace-folder }}
+
+      - name: Analyze boot and prepare CD12MAX kernel candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          BOOT_IMG="$RUNNER_TEMP/cd12max_boot/extracted/boot.img"
+          REPORT="$RUNNER_TEMP/cd12max-touch-analysis"
+          UNPACK="$REPORT/unpacked"
+          DEVICE="$GITHUB_WORKSPACE/workspace/device/sprd/uws6152_1h10_go"
+
+          mkdir -p "$REPORT" "$UNPACK"
+
+          test -s "$BOOT_IMG"
+          test -s "$DEVICE/prebuilt/kernel"
+          test -s "$DEVICE/prebuilt/dtbo.img"
+
+          echo "Downloading the official Android boot-image unpacker..."
+          curl -fsSL \
+            "https://android.googlesource.com/platform/system/tools/mkbootimg/+/refs/heads/main/unpack_bootimg.py?format=TEXT" \
+            | base64 -d > "$REPORT/unpack_bootimg.py"
+
+          echo "Analyzing the original boot image..."
+          python3 "$REPORT/unpack_bootimg.py" \
+            --boot_img "$BOOT_IMG" \
+            --out "$UNPACK" \
+            --format info \
+            | tee "$REPORT/boot-info.txt"
+
+          grep -Fq "boot magic: ANDROID!" "$REPORT/boot-info.txt"
+          test -s "$UNPACK/kernel"
+
+          echo "Checking whether the extracted kernel is ARM64..."
+          python3 - "$UNPACK/kernel" <<'PY'
+          import gzip
+          import sys
+
+          path = sys.argv[1]
+
+          with open(path, "rb") as f:
+              header = f.read(64)
+
+          if header.startswith(b"\x1f\x8b"):
+              with gzip.open(path, "rb") as f:
+                  header = f.read(64)
+
+          if len(header) < 60 or header[56:60] != b"ARMd":
+              print("ERRO: assinatura ARM64 Image não reconhecida.")
+              print("O kernel não será substituído automaticamente.")
+              sys.exit(1)
+
+          print("Assinatura ARM64 Image reconhecida.")
+          PY
+
+          echo "Saving the original CD20MAX kernel..."
+          cp "$DEVICE/prebuilt/kernel" "$REPORT/kernel-cd20max-original"
+
+          echo "Saving the extracted CD12MAX kernel..."
+          cp "$UNPACK/kernel" "$REPORT/kernel-cd12max-original"
+
+          echo "Comparing kernel files..."
+          sha256sum \
+            "$REPORT/kernel-cd20max-original" \
+            "$REPORT/kernel-cd12max-original"
+
+          echo "Using the CD12MAX kernel for this build candidate..."
+          cp "$UNPACK/kernel" "$DEVICE/prebuilt/kernel"
+
+          echo "Kernel candidate prepared."
+          echo "The CD20MAX DTBO remains unchanged."
+          echo "No device has been flashed."
+
+      - name: Set Swap Space
+        uses: pierotofy/set-swap-space@master
+        with:
+          swap-size-gb: 12
+
+      - name: Switch to Python2
+        run: |
+          sudo apt-get install -y python2 || true
+
+          if [ -x /usr/bin/python2 ]; then
+            sudo ln -sf /usr/bin/python2 /usr/local/bin/python
+          fi
+
+      - name: Building recovery candidate
+        shell: bash
+        run: |
+          set -e
+
+          source build/envsetup.sh
+          export ALLOW_MISSING_DEPENDENCIES=true
+
+          lunch omni_uws6152_1h10_go-eng
+
+          make clean
+          make recoveryimage -j2
+        working-directory: ${{ steps.init.outputs.workspace-folder }}
+
+      - name: Upload diagnostics and recovery candidate
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: CD12MAX-TWRP-touch-candidate
+          path: |
+            workspace/out/target/product/uws6152_1h10_go/recovery.img
+            ${{ runner.temp }}/cd12max-touch-analysis/
+          if-no-files-found: warn
+          retention-days: 7
